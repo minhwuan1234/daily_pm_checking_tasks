@@ -16,19 +16,32 @@ async function getAccessToken() {
   if (fs.existsSync(TOKEN_FILE)) {
     try {
       const saved = JSON.parse(fs.readFileSync(TOKEN_FILE, 'utf8'));
-      if (saved.refresh_token) { refreshToken = saved.refresh_token; console.log('📂 Dùng refresh token từ file'); }
+      if (saved.refresh_token) {
+        refreshToken = saved.refresh_token;
+        console.log('📂 Dùng refresh token từ file');
+      }
     } catch(e) {}
   }
 
   const res = await axios.post(
     'https://open.larksuite.com/open-apis/authen/v1/refresh_access_token',
-    { grant_type: 'refresh_token', refresh_token: refreshToken, app_id: process.env.LARK_APP_ID, app_secret: process.env.LARK_APP_SECRET },
+    {
+      grant_type:    'refresh_token',
+      refresh_token: refreshToken,
+      app_id:        process.env.LARK_APP_ID,
+      app_secret:    process.env.LARK_APP_SECRET,
+    },
     { headers: { 'Content-Type': 'application/json' } }
   );
+
   if (res.data.code !== 0) throw new Error(JSON.stringify(res.data));
 
   const { access_token, refresh_token, expires_in } = res.data.data;
-  fs.writeFileSync(TOKEN_FILE, JSON.stringify({ refresh_token, updated_at: new Date().toISOString() }));
+
+  fs.writeFileSync(TOKEN_FILE, JSON.stringify({
+    refresh_token,
+    updated_at: new Date().toISOString(),
+  }));
 
   const { execSync } = require('child_process');
   try {
@@ -38,27 +51,33 @@ async function getAccessToken() {
     execSync('git commit -m "chore: rotate lark refresh token" --allow-empty');
     execSync('git push');
     console.log('🔄 Refresh token rotated & saved');
-  } catch(e) { console.warn('⚠️ Git push failed:', e.message.slice(0,80)); }
+  } catch(e) {
+    console.warn('⚠️ Git push failed:', e.message.slice(0, 80));
+  }
 
   cachedToken = access_token;
   tokenExpiry = Date.now() + (expires_in - 60) * 1000;
   console.log('✅ Token OK:', access_token.slice(0, 15));
-  console.log('Full token:', access_token);
   return cachedToken;
 }
 
 async function searchTaskInTasklist(keyword) {
   const token = await getAccessToken();
   let allTasks = [], pageToken = null;
+
   do {
     const params = { page_size: 100 };
     if (pageToken) params.page_token = pageToken;
-    const res = await axios.get(`${BASE}/task/v2/tasklists/${TASKLIST_GUID}/tasks`, { headers: { Authorization: `Bearer ${token}` }, params });
+    const res = await axios.get(
+      `${BASE}/task/v2/tasklists/${TASKLIST_GUID}/tasks`,
+      { headers: { Authorization: `Bearer ${token}` }, params }
+    );
     allTasks = allTasks.concat(res.data?.data?.items || []);
     pageToken = res.data?.data?.page_token;
   } while (pageToken);
 
   console.log(`  📋 Tasklist có ${allTasks.length} tasks`);
+
   const kw = keyword.toLowerCase().trim();
   return allTasks.filter(t => {
     const title = (t.summary || '').replace(/^\d+\.\s*[""]?/, '').toLowerCase().trim();
@@ -71,7 +90,11 @@ async function getTaskDetail(taskGuid) {
   const res = await axios.get(`${BASE}/task/v2/tasks/${taskGuid}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (res.data.code !== 0) { console.warn('⚠️ Detail error:', res.data.msg); return null; }
+
+  if (res.data.code !== 0) {
+    console.warn('  ⚠️ Detail error:', res.data.msg);
+    return null;
+  }
 
   const t = res.data?.data?.task;
   if (!t) return null;
@@ -101,68 +124,42 @@ async function getRecentComments(detail) {
       resource_id:   detail.guid,
       page_size:     100,
     },
-    timeout: 10000,
+    timeout: 15000,
   });
 
-  console.log('  💬 Comments response code:', res.data.code, 'msg:', res.data.msg);
+  console.log(`  💬 Comments code:${res.data.code} msg:${res.data.msg}`);
   if (res.data.code !== 0) return [];
 
+  const items = res.data?.data?.items || [];
+  console.log(`  💬 Total comments: ${items.length}`);
+
   const since = Date.now() - 24 * 60 * 60 * 1000;
-  return (res.data?.data?.items || [])
-    .filter(c => parseInt(c.created_at || 0) >= since)
-    .map(c => ({
-      text:      c.content || '',
-      createdAt: new Date(parseInt(c.created_at))
-                   .toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }),
-    }));
-}
-
-  // Thử tất cả endpoint có thể với user token
-  const endpoints = [
-    `${BASE}/task/v2/tasks/${detail.guid}/comments`,
-    `${BASE}/task/v1/tasks/${(detail.task_id||'').replace(/^t/,'')}/comments`,
-    `${BASE}/task/v1/tasks/${detail.task_id}/comments`,
-  ].filter(e => !e.includes('undefined') && !e.includes('null'));
-
-  for (const endpoint of endpoints) {
-    try {
-      const res = await axios.get(endpoint, {
-        headers: { Authorization: `Bearer ${token}` },
-        params:  { page_size: 100 },
-      });
-      console.log(`  💬 ${endpoint.split('/').slice(-3).join('/')} → code:${res.data.code} msg:${res.data.msg}`);
-
-      if (res.data.code === 0) {
-        const items = res.data?.data?.items || [];
-        console.log(`  💬 Total comments: ${items.length}`);
-        return items
-          .filter(c => {
-            const ts = parseInt(c.create_milli_time || c.created_at || 0);
-            const ms = ts > 1e10 ? ts : ts * 1000;
-            return ms >= since;
-          })
-          .map(c => {
-            const ts = parseInt(c.create_milli_time || c.created_at || 0);
-            const ms = ts > 1e10 ? ts : ts * 1000;
-            return {
-              text:      c.content || c.body?.content || '',
-              createdAt: new Date(ms).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }),
-            };
-          });
-      }
-    } catch(e) {
-      console.warn(`  ⚠️ ${endpoint.split('/').slice(-3).join('/')} error:`, e.response?.status, e.response?.data?.msg || e.message);
-    }
-  }
-  return [];
+  return items
+    .filter(c => {
+      const ts = parseInt(c.created_at || 0);
+      const ms = ts > 1e10 ? ts : ts * 1000;
+      return ms >= since;
+    })
+    .map(c => {
+      const ts = parseInt(c.created_at || 0);
+      const ms = ts > 1e10 ? ts : ts * 1000;
+      return {
+        text:      c.content || '',
+        createdAt: new Date(ms).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }),
+      };
+    });
 }
 
 async function main() {
   const payload = JSON.parse(process.env.PAYLOAD || '{}');
   const { date, members = [] } = payload;
-  console.log(`📅 Ngày: ${date}\n👥 Thành viên: ${members.length}\n📋 Tasklist: ${TASKLIST_GUID}\n`);
+
+  console.log(`📅 Ngày: ${date}`);
+  console.log(`👥 Thành viên: ${members.length}`);
+  console.log(`📋 Tasklist: ${TASKLIST_GUID}\n`);
 
   const report = [];
+
   for (const m of members) {
     console.log(`\n👤 ${m.member}`);
     const memberReport = { member: m.member, tasks: [] };
@@ -203,4 +200,7 @@ async function main() {
   console.log(JSON.stringify(report, null, 2));
 }
 
-main().catch(err => { console.error('❌ Lỗi:', err.response?.data || err.message); process.exit(1); });
+main().catch(err => {
+  console.error('❌ Lỗi:', err.response?.data || err.message);
+  process.exit(1);
+});
