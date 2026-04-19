@@ -168,10 +168,12 @@ async function main() {
       }
 
       const larkTask = matched[0];
-      console.log(`  ✅ Match: "${larkTask.summary}"`);
+      console.log(`  ✅ Match: "${larkTask.summary}" guid=${larkTask.guid} id=${larkTask.id} task_id=${larkTask.task_id}`);
 
-      const detail   = await getTaskDetail(larkTask.guid);
-      const comments = await getRecentComments(larkTask.guid);
+      const taskId = larkTask.guid || larkTask.id || larkTask.task_id;
+      console.log(`  🔑 Task ID: ${taskId}`);
+      const detail   = await getTaskDetail(taskId);
+      const comments = await getRecentComments(taskId);
       console.log(`  💬 Comments 24h: ${comments.length}`);
 
       memberReport.tasks.push({
