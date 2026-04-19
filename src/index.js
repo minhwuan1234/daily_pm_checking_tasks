@@ -1,4 +1,3 @@
-// Bỏ dotenv vì GitHub Actions inject env vars trực tiếp
 const { getAccessToken } = require('./lark/auth');
 const { searchTasks, getTaskDetail } = require('./lark/tasks');
 const { getRecentComments } = require('./lark/comments');
@@ -11,24 +10,31 @@ async function main() {
   console.log(`📅 Ngày: ${date}`);
   console.log(`👥 Số thành viên: ${members.length}\n`);
 
-  // Test Lark token
   console.log('🔑 Lấy Lark access token...');
   const token = await getAccessToken();
-  console.log('✅ Token OK');
+  console.log('✅ Token OK, prefix:', token.slice(0, 15));
 
+  // Test với user token — Lark Task v2 dùng Authorization: Bearer
   console.log('\n🔍 Test lấy tasks từ Lark...');
   const testRes = await axios.get(
     'https://open.larksuite.com/open-apis/task/v2/tasks',
     {
-      headers: { Authorization: `Bearer ${token}` },
-      params:  { page_size: 10 },
+      headers: {
+        'Authorization':      `Bearer ${token}`,
+        'X-User-Access-Token': token,
+      },
+      params: { page_size: 10 },
     }
   );
+
+  console.log('Response code:', testRes.data?.code);
+  console.log('Response:', JSON.stringify(testRes.data));
+
   const testItems = testRes.data?.data?.items || [];
   console.log(`📋 Lark trả về ${testItems.length} tasks`);
 
   if (testItems.length === 0) {
-    console.log('⚠️  Không có task → cần user_access_token');
+    console.log('⚠️  Không có task nào');
     return;
   }
 
