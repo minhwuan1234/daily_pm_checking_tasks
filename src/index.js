@@ -101,7 +101,8 @@ async function getRecentComments(detail) {
   const token = await getAccessToken();
 
   // Thử tất cả ID có thể dùng cho v1 comments
-  const idsToTry = [detail.id, detail.task_id, detail.guid].filter(Boolean);
+  const rawId = (detail.task_id || '').replace(/^t/, '');
+  const idsToTry = [rawId, detail.task_id, detail.guid].filter(Boolean);
   console.log('  💬 Thử comment với IDs:', idsToTry);
 
   for (const id of idsToTry) {
