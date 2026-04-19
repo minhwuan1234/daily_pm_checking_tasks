@@ -3,20 +3,24 @@ name: Daily Task Check
 on:
   repository_dispatch:
     types: [daily_task_check]
+  workflow_dispatch:
 
 jobs:
   run:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+
       - uses: actions/setup-node@v3
         with:
           node-version: '18'
+
       - name: Install dependencies
         run: npm install
+
       - name: Run
         env:
-         PAYLOAD: ${{ toJson(github.event.client_payload) }}
-         LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
-         LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
+          PAYLOAD: ${{ github.event.client_payload != null && toJson(github.event.client_payload) || '{"date":"19-Apr-2026","members":[{"member":"Minh Thu","taskCount":1,"tasks":[{"task":"SN Outdated Content: 5. Temperature ~12.5 mins Illus (3.5)","type":"new"}],"tasksSummary":"1. SN Outdated Content"}]}' }}
+          LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
+          LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
         run: node src/index.js
