@@ -9,7 +9,7 @@ jobs:
   run:
     runs-on: ubuntu-latest
     permissions:
-      secrets: write  # cho phép update GitHub Secrets
+      contents: write  # cho phép update GitHub Secrets
     steps:
       - uses: actions/checkout@v3
 
