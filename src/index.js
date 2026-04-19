@@ -91,12 +91,11 @@ async function searchTaskInTasklist(keyword) {
   });
 }
 
-async function getTaskDetail(taskId) {
+async function getTaskDetail(taskGuid) {
   const token = await getAccessToken();
-  const res = await axios.get(`${BASE}/task/v2/tasks/${taskId}`, {
+  const res = await axios.get(`${BASE}/task/v2/tasks/${taskGuid}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  console.log('  📄 Detail raw:', JSON.stringify(res.data).slice(0, 300));
 
   if (res.data.code !== 0) {
     console.warn('  ⚠️  Detail error:', res.data.msg);
@@ -105,19 +104,62 @@ async function getTaskDetail(taskId) {
 
   const t = res.data?.data?.task;
   if (!t) return null;
+
+  // Fix due date: Lark trả về seconds, không phải milliseconds
+  let dueDate = null;
+  if (t.due?.timestamp) {
+    const ts = parseInt(t.due.timestamp);
+    // Nếu timestamp > 1e10 thì là milliseconds, ngược lại là seconds
+    const ms = ts > 1e10 ? ts : ts * 1000;
+    dueDate = new Date(ms).toLocaleDateString('vi-VN');
+  }
+
   return {
     title:       t.summary,
     description: t.description || '',
-    status:      t.completed_at ? 'completed' : 'in_progress',
-    due:         t.due?.timestamp
-                   ? new Date(parseInt(t.due.timestamp) * 1000).toLocaleDateString('vi-VN')
-                   : null,
-    url: `https://applink.larksuite.com/client/todo/detail?guid=${taskId}`,
+    status:      t.completed_at && t.completed_at !== '0' ? 'completed' : 'in_progress',
+    due:         dueDate,
+    // Lưu cả v1_id để dùng cho comments
+    v1_id:       t.id,
+    guid:        t.guid,
+    url: `https://applink.larksuite.com/client/todo/detail?guid=${t.guid}`,
   };
 }
 
-async function getRecentComments(taskId) {
-  return []; // TODO: fix comments API later
+async function getRecentComments(taskDetail) {
+  if (!taskDetail) return [];
+  const token = await getAccessToken();
+
+  // Task v1 API dùng task_id dạng số (field "id" từ detail)
+  // Task v2 API không có comments endpoint
+  const taskId = taskDetail.v1_id;
+  if (!taskId) {
+    console.warn('  ⚠️  Không có v1 task ID cho comments');
+    return [];
+  }
+
+  const res = await axios.get(`${BASE}/task/v1/tasks/${taskId}/comments`, {
+    headers: { Authorization: `Bearer ${token}` },
+    params:  { page_size: 100 },
+  });
+
+  if (res.data.code !== 0) {
+    console.warn('  ⚠️  Comments error:', res.data.msg);
+    return [];
+  }
+
+  const comments = res.data?.data?.items || [];
+  const since = Date.now() - 24 * 60 * 60 * 1000;
+  return comments
+    .filter(c => {
+      const ts = parseInt(c.create_milli_time || c.created_at || 0);
+      return ts >= since;
+    })
+    .map(c => ({
+      text:      c.content || '',
+      createdAt: new Date(parseInt(c.create_milli_time || c.created_at))
+                   .toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }),
+    }));
 }
 
 // ── Main ──────────────────────────────────────────────────────────
@@ -146,11 +188,12 @@ async function main() {
       }
 
       const larkTask = matched[0];
-      const taskId   = larkTask.guid || larkTask.id || larkTask.task_id;
-      console.log(`  ✅ Match: "${larkTask.summary}" (${taskId})`);
+      const taskGuid = larkTask.guid;
+      console.log(`  ✅ Match: "${larkTask.summary}"`);
 
-      const detail   = await getTaskDetail(taskId);
-      const comments = await getRecentComments(taskId);
+      const detail   = await getTaskDetail(taskGuid);
+      const comments = await getRecentComments(detail);
+      console.log(`  📅 Due: ${detail?.due}`);
       console.log(`  💬 Comments 24h: ${comments.length}`);
 
       memberReport.tasks.push({
