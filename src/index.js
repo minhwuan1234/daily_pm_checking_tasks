@@ -1,17 +1,34 @@
 const axios = require('axios');
+const fs    = require('fs');
+const path  = require('path');
 
-// ── Auth: tự động update refresh token sau mỗi lần dùng ─────────
+const TASKLIST_GUID = 'eb4234bf-c611-4e74-9798-1c288f1f04e5';
+const BASE          = 'https://open.larksuite.com/open-apis';
+const TOKEN_FILE    = path.join(process.env.GITHUB_WORKSPACE || '.', '.lark_token');
+
+// ── Auth ──────────────────────────────────────────────────────────
 let cachedToken = null;
 let tokenExpiry  = 0;
 
 async function getAccessToken() {
   if (cachedToken && Date.now() < tokenExpiry) return cachedToken;
 
+  let refreshToken = process.env.LARK_REFRESH_TOKEN;
+  if (fs.existsSync(TOKEN_FILE)) {
+    try {
+      const saved = JSON.parse(fs.readFileSync(TOKEN_FILE, 'utf8'));
+      if (saved.refresh_token) {
+        refreshToken = saved.refresh_token;
+        console.log('📂 Dùng refresh token từ file');
+      }
+    } catch(e) {}
+  }
+
   const res = await axios.post(
     'https://open.larksuite.com/open-apis/authen/v1/refresh_access_token',
     {
       grant_type:    'refresh_token',
-      refresh_token: process.env.LARK_REFRESH_TOKEN,
+      refresh_token: refreshToken,
       app_id:        process.env.LARK_APP_ID,
       app_secret:    process.env.LARK_APP_SECRET,
     },
@@ -22,10 +39,12 @@ async function getAccessToken() {
 
   const { access_token, refresh_token, expires_in } = res.data.data;
 
-  // Lưu refresh token mới vào GitHub Secret qua API
-  if (refresh_token && process.env.GITHUB_TOKEN) {
-    await updateGithubSecret(refresh_token);
-  }
+  // Lưu refresh token mới vào file + commit
+  fs.writeFileSync(TOKEN_FILE, JSON.stringify({
+    refresh_token,
+    updated_at: new Date().toISOString(),
+  }));
+  await commitTokenFile();
 
   cachedToken = access_token;
   tokenExpiry = Date.now() + (expires_in - 60) * 1000;
@@ -33,49 +52,58 @@ async function getAccessToken() {
   return cachedToken;
 }
 
-async function updateGithubSecret(newRefreshToken) {
+async function commitTokenFile() {
+  const { execSync } = require('child_process');
   try {
-    // Lấy public key để encrypt secret
-    const keyRes = await axios.get(
-      `https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}/actions/secrets/public-key`,
-      { headers: { Authorization: `Bearer ${process.env.GITHUB_TOKEN}`, 'X-GitHub-Api-Version': '2022-11-28' } }
-    );
-    const { key, key_id } = keyRes.data;
-
-    // Encrypt bằng libsodium
-    const sodium = require('libsodium-wrappers');
-    await sodium.ready;
-    const binkey  = sodium.from_base64(key, sodium.base64_variants.ORIGINAL);
-    const binsec  = sodium.from_string(newRefreshToken);
-    const encrypted = sodium.crypto_box_seal(binsec, binkey);
-    const encryptedB64 = sodium.to_base64(encrypted, sodium.base64_variants.ORIGINAL);
-
-    // Update secret
-    await axios.put(
-      `https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}/actions/secrets/LARK_REFRESH_TOKEN`,
-      { encrypted_value: encryptedB64, key_id },
-      { headers: { Authorization: `Bearer ${process.env.GITHUB_TOKEN}`, 'X-GitHub-Api-Version': '2022-11-28' } }
-    );
-    console.log('🔄 Refresh token updated in GitHub Secrets');
+    execSync('git config user.email "actions@github.com"');
+    execSync('git config user.name "GitHub Actions"');
+    execSync(`git add ${TOKEN_FILE}`);
+    execSync('git commit -m "chore: rotate lark refresh token" --allow-empty');
+    execSync('git push');
+    console.log('🔄 Refresh token rotated & saved');
   } catch (e) {
-    console.warn('⚠️  Không update được refresh token:', e.message);
+    console.warn('⚠️  Git push failed:', e.message.slice(0, 100));
   }
 }
 
-// ── Lark API helpers ─────────────────────────────────────────────
-const BASE = 'https://open.larksuite.com/open-apis';
-
-async function searchTasks(keyword) {
+// ── Lark Task helpers ─────────────────────────────────────────────
+async function searchTaskInTasklist(keyword) {
   const token = await getAccessToken();
-  const res = await axios.get(`${BASE}/task/v2/tasks`, {
-    headers: { Authorization: `Bearer ${token}` },
-    params:  { page_size: 50 },
+
+  // Lấy tất cả tasks trong tasklist
+  let allTasks = [];
+  let pageToken = null;
+
+  do {
+    const params = { page_size: 100 };
+    if (pageToken) params.page_token = pageToken;
+
+    const res = await axios.get(
+      `${BASE}/task/v2/tasklists/${TASKLIST_GUID}/tasks`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        params,
+      }
+    );
+
+    const items = res.data?.data?.items || [];
+    allTasks = allTasks.concat(items);
+    pageToken = res.data?.data?.page_token;
+  } while (pageToken);
+
+  console.log(`  📋 Tasklist có ${allTasks.length} tasks`);
+
+  // Fuzzy match: bỏ prefix số + quotes rồi so sánh
+  const kw = keyword.toLowerCase().trim();
+  const matched = allTasks.filter(t => {
+    const title = (t.summary || '')
+      .replace(/^\d+\.\s*[""]?/, '')
+      .toLowerCase()
+      .trim();
+    return title.includes(kw) || kw.includes(title.slice(0, 30));
   });
-  const tasks = res.data?.data?.items || [];
-  return tasks.filter(t => {
-    const title = (t.summary || '').replace(/^\d+\.\s*[""]?/, '').toLowerCase();
-    return title.includes(keyword.toLowerCase());
-  });
+
+  return matched;
 }
 
 async function getTaskDetail(taskId) {
@@ -106,16 +134,21 @@ async function getRecentComments(taskId) {
   const since = Date.now() - 24 * 60 * 60 * 1000;
   return comments
     .filter(c => parseInt(c.created_at) * 1000 >= since)
-    .map(c => ({ text: c.content || '', createdAt: new Date(parseInt(c.created_at) * 1000).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }) }));
+    .map(c => ({
+      text:      c.content || '',
+      createdAt: new Date(parseInt(c.created_at) * 1000)
+                   .toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }),
+    }));
 }
 
-// ── Main ─────────────────────────────────────────────────────────
+// ── Main ──────────────────────────────────────────────────────────
 async function main() {
   const payload = JSON.parse(process.env.PAYLOAD || '{}');
   const { date, members = [] } = payload;
 
   console.log(`📅 Ngày: ${date}`);
-  console.log(`👥 Thành viên: ${members.length}\n`);
+  console.log(`👥 Thành viên: ${members.length}`);
+  console.log(`📋 Tasklist: ${TASKLIST_GUID}\n`);
 
   const report = [];
 
@@ -125,10 +158,11 @@ async function main() {
 
     for (const t of m.tasks) {
       console.log(`  🔍 Search: "${t.task.slice(0, 60)}"`);
-      const matched = await searchTasks(t.task);
+
+      const matched = await searchTaskInTasklist(t.task);
 
       if (!matched.length) {
-        console.log(`  ⚠️  Không tìm thấy`);
+        console.log(`  ⚠️  Không tìm thấy trong tasklist`);
         memberReport.tasks.push({ taskName: t.task, larkFound: false });
         continue;
       }
@@ -141,16 +175,22 @@ async function main() {
       console.log(`  💬 Comments 24h: ${comments.length}`);
 
       memberReport.tasks.push({
-        taskName: t.task, larkTitle: detail.title,
-        status: detail.status, due: detail.due,
-        description: detail.description, url: detail.url,
-        comments, larkFound: true,
+        taskName:    t.task,
+        larkTitle:   detail.title,
+        status:      detail.status,
+        due:         detail.due,
+        description: detail.description,
+        url:         detail.url,
+        comments,
+        larkFound:   true,
       });
     }
+
     report.push(memberReport);
   }
 
   console.log('\n' + '═'.repeat(60));
+  console.log('📋 REPORT:');
   console.log(JSON.stringify(report, null, 2));
 }
 
