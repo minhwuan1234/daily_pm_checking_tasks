@@ -16,13 +16,16 @@ jobs:
           node-version: '18'
 
       - name: Install dependencies
-        run: npm install
+        run: |
+          npm install
+          echo "✅ node_modules installed"
+          ls node_modules | grep -E "axios|dotenv"
 
       - name: Set payload
         id: payload
         run: |
-          if [ -n '${{ toJson(github.event.client_payload) }}' ] && [ '${{ toJson(github.event.client_payload) }}' != 'null' ]; then
-            echo "data=${{ toJson(github.event.client_payload) }}" >> $GITHUB_OUTPUT
+          if [ '${{ github.event_name }}' = 'repository_dispatch' ]; then
+            echo 'data=${{ toJson(github.event.client_payload) }}' >> $GITHUB_OUTPUT
           else
             echo 'data={"date":"19-Apr-2026","members":[{"member":"Minh Thu","taskCount":1,"tasks":[{"task":"SN Outdated Content: 5. Temperature ~12.5 mins Illus (3.5)","type":"new"}],"tasksSummary":"1. SN Outdated Content"}]}' >> $GITHUB_OUTPUT
           fi
@@ -32,4 +35,8 @@ jobs:
           PAYLOAD: ${{ steps.payload.outputs.data }}
           LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
           LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
-        run: node src/index.js
+          NODE_PATH: ${{ github.workspace }}/node_modules
+        run: |
+          echo "Working dir: $(pwd)"
+          echo "node_modules exists: $(ls -la | grep node_modules)"
+          node src/index.js
