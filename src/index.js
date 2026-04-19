@@ -117,27 +117,7 @@ async function getTaskDetail(taskId) {
 }
 
 async function getRecentComments(taskId) {
-  const token = await getAccessToken();
-  const res = await axios.get(`${BASE}/task/v1/tasks/${taskId}/comments`, {
-    headers: { Authorization: `Bearer ${token}` },
-    params:  { page_size: 100 },
-  });
-  console.log('  💬 Comments raw:', JSON.stringify(res.data).slice(0, 200));
-
-  if (res.data.code !== 0) {
-    console.warn('  ⚠️  Comments error:', res.data.msg);
-    return [];
-  }
-
-  const comments = res.data?.data?.items || [];
-  const since = Date.now() - 24 * 60 * 60 * 1000;
-  return comments
-    .filter(c => parseInt(c.created_at) * 1000 >= since)
-    .map(c => ({
-      text:      c.content || '',
-      createdAt: new Date(parseInt(c.created_at) * 1000)
-                   .toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }),
-    }));
+  return []; // TODO: fix comments API later
 }
 
 // ── Main ──────────────────────────────────────────────────────────
