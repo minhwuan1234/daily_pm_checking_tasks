@@ -98,7 +98,33 @@ async function getTaskDetail(taskGuid) {
 
 async function getRecentComments(detail) {
   if (!detail) return [];
-  const token = await getAccessToken();
+
+  // Lấy tenant token riêng cho comments
+  const tenantRes = await axios.post(
+    'https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal',
+    { app_id: process.env.LARK_APP_ID, app_secret: process.env.LARK_APP_SECRET },
+    { headers: { 'Content-Type': 'application/json' } }
+  );
+  const tenantToken = tenantRes.data.tenant_access_token;
+
+  const rawId = (detail.task_id || '').replace(/^t/, '');
+
+  const res = await axios.get(
+    `https://open.larksuite.com/open-apis/task/v1/tasks/${rawId}/comments`,
+    {
+      headers: { Authorization: `Bearer ${tenantToken}` },
+      params:  { page_size: 100 },
+    }
+  );
+  console.log('Comments response:', JSON.stringify(res.data).slice(0, 200));
+
+  if (res.data.code !== 0) return [];
+
+  const since = Date.now() - 24 * 60 * 60 * 1000;
+  return (res.data?.data?.items || [])
+    .filter(c => parseInt(c.create_milli_time || 0) >= since)
+    .map(c => ({ text: c.content || '', createdAt: new Date(parseInt(c.create_milli_time)).toLocaleString('vi-VN') }));
+}
 
   // Thử tất cả ID có thể dùng cho v1 comments
   const rawId = (detail.task_id || '').replace(/^t/, '');
