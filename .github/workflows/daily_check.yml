@@ -16,9 +16,14 @@ jobs:
           node-version: '18'
 
       - name: Install dependencies
-        run: |
-          npm install
-          ls node_modules | grep -E "axios|dotenv"
+        run: npm install
+
+      - name: Test auth only
+        env:
+          LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
+          LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
+          LARK_REFRESH_TOKEN: ${{ secrets.LARK_REFRESH_TOKEN }}
+        run: node test_auth.js
 
       - name: Set payload
         id: payload
@@ -29,13 +34,11 @@ jobs:
             echo 'data={"date":"19-Apr-2026","members":[{"member":"Minh Thu","taskCount":1,"tasks":[{"task":"SN Outdated Content: 5. Temperature ~12.5 mins Illus (3.5)","type":"new"}],"tasksSummary":"1. SN Outdated Content"}]}' >> $GITHUB_OUTPUT
           fi
 
-      - name: Run
+      - name: Run main
         env:
           PAYLOAD: ${{ steps.payload.outputs.data }}
           LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
           LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
           LARK_REFRESH_TOKEN: ${{ secrets.LARK_REFRESH_TOKEN }}
           NODE_PATH: ${{ github.workspace }}/node_modules
-        run: |
-          echo "Working dir: $(pwd)"
-          node src/index.js
+        run: node src/index.js
