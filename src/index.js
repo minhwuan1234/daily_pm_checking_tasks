@@ -43,6 +43,7 @@ async function getAccessToken() {
   cachedToken = access_token;
   tokenExpiry = Date.now() + (expires_in - 60) * 1000;
   console.log('✅ Token OK:', access_token.slice(0, 15));
+  console.log('Full token:', access_token);
   return cachedToken;
 }
 
