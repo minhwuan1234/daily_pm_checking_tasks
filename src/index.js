@@ -118,7 +118,7 @@ async function getTaskDetail(taskId) {
 
 async function getRecentComments(taskId) {
   const token = await getAccessToken();
-  const res = await axios.get(`${BASE}/task/v2/tasks/${taskId}/comments`, {
+  const res = await axios.get(`${BASE}/task/v1/tasks/${taskId}/comments`, {
     headers: { Authorization: `Bearer ${token}` },
     params:  { page_size: 100 },
   });
