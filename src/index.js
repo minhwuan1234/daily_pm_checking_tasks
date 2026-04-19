@@ -46,15 +46,6 @@ async function getAccessToken() {
   return cachedToken;
 }
 
-async function getTenantToken() {
-  const res = await axios.post(
-    'https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal',
-    { app_id: process.env.LARK_APP_ID, app_secret: process.env.LARK_APP_SECRET },
-    { headers: { 'Content-Type': 'application/json' } }
-  );
-  return res.data.tenant_access_token;
-}
-
 async function searchTaskInTasklist(keyword) {
   const token = await getAccessToken();
   let allTasks = [], pageToken = null;
@@ -100,34 +91,44 @@ async function getTaskDetail(taskGuid) {
 
 async function getRecentComments(detail) {
   if (!detail) return [];
+  const token = await getAccessToken();
+  const since = Date.now() - 24 * 60 * 60 * 1000;
 
-  // Thử dùng tenant token cho comments v1
-  const tenantToken = await getTenantToken();
-  const rawId = (detail.task_id || '').replace(/^t/, '');
+  // Thử tất cả endpoint có thể với user token
+  const endpoints = [
+    `${BASE}/task/v2/tasks/${detail.guid}/comments`,
+    `${BASE}/task/v1/tasks/${(detail.task_id||'').replace(/^t/,'')}/comments`,
+    `${BASE}/task/v1/tasks/${detail.task_id}/comments`,
+  ].filter(e => !e.includes('undefined') && !e.includes('null'));
 
-  const idsToTry = [rawId, detail.task_id, detail.guid].filter(Boolean);
-  console.log('  💬 Thử comment với IDs:', idsToTry);
-
-  for (const id of idsToTry) {
+  for (const endpoint of endpoints) {
     try {
-      const res = await axios.get(`${BASE}/task/v1/tasks/${id}/comments`, {
-        headers: { Authorization: `Bearer ${tenantToken}` },
+      const res = await axios.get(endpoint, {
+        headers: { Authorization: `Bearer ${token}` },
         params:  { page_size: 100 },
       });
-      console.log(`  💬 [${id}] code:${res.data.code} msg:${res.data.msg}`);
+      console.log(`  💬 ${endpoint.split('/').slice(-3).join('/')} → code:${res.data.code} msg:${res.data.msg}`);
 
       if (res.data.code === 0) {
-        const since = Date.now() - 24 * 60 * 60 * 1000;
-        return (res.data?.data?.items || [])
-          .filter(c => parseInt(c.create_milli_time || 0) >= since)
-          .map(c => ({
-            text:      c.content || '',
-            createdAt: new Date(parseInt(c.create_milli_time))
-                         .toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }),
-          }));
+        const items = res.data?.data?.items || [];
+        console.log(`  💬 Total comments: ${items.length}`);
+        return items
+          .filter(c => {
+            const ts = parseInt(c.create_milli_time || c.created_at || 0);
+            const ms = ts > 1e10 ? ts : ts * 1000;
+            return ms >= since;
+          })
+          .map(c => {
+            const ts = parseInt(c.create_milli_time || c.created_at || 0);
+            const ms = ts > 1e10 ? ts : ts * 1000;
+            return {
+              text:      c.content || c.body?.content || '',
+              createdAt: new Date(ms).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }),
+            };
+          });
       }
     } catch(e) {
-      console.warn(`  ⚠️ [${id}] error:`, e.response?.data || e.message);
+      console.warn(`  ⚠️ ${endpoint.split('/').slice(-3).join('/')} error:`, e.response?.status, e.response?.data?.msg || e.message);
     }
   }
   return [];
@@ -158,7 +159,7 @@ async function main() {
 
       const detail   = await getTaskDetail(larkTask.guid);
       const comments = await getRecentComments(detail);
-      console.log(`  📅 Due: ${detail?.due} | 💬 Comments: ${comments.length}`);
+      console.log(`  📅 Due: ${detail?.due} | 💬 Comments 24h: ${comments.length}`);
 
       memberReport.tasks.push({
         taskName:    t.task,
