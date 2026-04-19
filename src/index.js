@@ -39,7 +39,6 @@ async function getAccessToken() {
 
   const { access_token, refresh_token, expires_in } = res.data.data;
 
-  // Lưu refresh token mới vào file + commit
   fs.writeFileSync(TOKEN_FILE, JSON.stringify({
     refresh_token,
     updated_at: new Date().toISOString(),
@@ -66,44 +65,30 @@ async function commitTokenFile() {
   }
 }
 
-// ── Lark Task helpers ─────────────────────────────────────────────
+// ── Lark API ──────────────────────────────────────────────────────
 async function searchTaskInTasklist(keyword) {
   const token = await getAccessToken();
-
-  // Lấy tất cả tasks trong tasklist
   let allTasks = [];
   let pageToken = null;
 
   do {
     const params = { page_size: 100 };
     if (pageToken) params.page_token = pageToken;
-
     const res = await axios.get(
       `${BASE}/task/v2/tasklists/${TASKLIST_GUID}/tasks`,
-      {
-        headers: { Authorization: `Bearer ${token}` },
-        params,
-      }
+      { headers: { Authorization: `Bearer ${token}` }, params }
     );
-
-    const items = res.data?.data?.items || [];
-    allTasks = allTasks.concat(items);
+    allTasks = allTasks.concat(res.data?.data?.items || []);
     pageToken = res.data?.data?.page_token;
   } while (pageToken);
 
   console.log(`  📋 Tasklist có ${allTasks.length} tasks`);
 
-  // Fuzzy match: bỏ prefix số + quotes rồi so sánh
   const kw = keyword.toLowerCase().trim();
-  const matched = allTasks.filter(t => {
-    const title = (t.summary || '')
-      .replace(/^\d+\.\s*[""]?/, '')
-      .toLowerCase()
-      .trim();
+  return allTasks.filter(t => {
+    const title = (t.summary || '').replace(/^\d+\.\s*[""]?/, '').toLowerCase().trim();
     return title.includes(kw) || kw.includes(title.slice(0, 30));
   });
-
-  return matched;
 }
 
 async function getTaskDetail(taskId) {
@@ -111,6 +96,13 @@ async function getTaskDetail(taskId) {
   const res = await axios.get(`${BASE}/task/v2/tasks/${taskId}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
+  console.log('  📄 Detail raw:', JSON.stringify(res.data).slice(0, 300));
+
+  if (res.data.code !== 0) {
+    console.warn('  ⚠️  Detail error:', res.data.msg);
+    return null;
+  }
+
   const t = res.data?.data?.task;
   if (!t) return null;
   return {
@@ -120,7 +112,7 @@ async function getTaskDetail(taskId) {
     due:         t.due?.timestamp
                    ? new Date(parseInt(t.due.timestamp) * 1000).toLocaleDateString('vi-VN')
                    : null,
-    url: `https://applink.larksuite.com/client/todo/detail?guid=${t.guid}`,
+    url: `https://applink.larksuite.com/client/todo/detail?guid=${taskId}`,
   };
 }
 
@@ -130,6 +122,13 @@ async function getRecentComments(taskId) {
     headers: { Authorization: `Bearer ${token}` },
     params:  { page_size: 100 },
   });
+  console.log('  💬 Comments raw:', JSON.stringify(res.data).slice(0, 200));
+
+  if (res.data.code !== 0) {
+    console.warn('  ⚠️  Comments error:', res.data.msg);
+    return [];
+  }
+
   const comments = res.data?.data?.items || [];
   const since = Date.now() - 24 * 60 * 60 * 1000;
   return comments
@@ -158,36 +157,33 @@ async function main() {
 
     for (const t of m.tasks) {
       console.log(`  🔍 Search: "${t.task.slice(0, 60)}"`);
-
       const matched = await searchTaskInTasklist(t.task);
 
       if (!matched.length) {
-        console.log(`  ⚠️  Không tìm thấy trong tasklist`);
+        console.log(`  ⚠️  Không tìm thấy`);
         memberReport.tasks.push({ taskName: t.task, larkFound: false });
         continue;
       }
 
       const larkTask = matched[0];
-      console.log(`  ✅ Match: "${larkTask.summary}" guid=${larkTask.guid} id=${larkTask.id} task_id=${larkTask.task_id}`);
+      const taskId   = larkTask.guid || larkTask.id || larkTask.task_id;
+      console.log(`  ✅ Match: "${larkTask.summary}" (${taskId})`);
 
-      const taskId = larkTask.guid || larkTask.id || larkTask.task_id;
-      console.log(`  🔑 Task ID: ${taskId}`);
       const detail   = await getTaskDetail(taskId);
       const comments = await getRecentComments(taskId);
       console.log(`  💬 Comments 24h: ${comments.length}`);
 
       memberReport.tasks.push({
         taskName:    t.task,
-        larkTitle:   detail.title,
-        status:      detail.status,
-        due:         detail.due,
-        description: detail.description,
-        url:         detail.url,
+        larkTitle:   detail?.title,
+        status:      detail?.status,
+        due:         detail?.due,
+        description: detail?.description,
+        url:         detail?.url,
         comments,
         larkFound:   true,
       });
     }
-
     report.push(memberReport);
   }
 
