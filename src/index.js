@@ -93,7 +93,29 @@ async function getTaskDetail(taskGuid) {
 async function getRecentComments(detail) {
   if (!detail) return [];
   const token = await getAccessToken();
+
+  const res = await axios.get(`${BASE}/task/v2/comments`, {
+    headers: { Authorization: `Bearer ${token}` },
+    params: {
+      resource_type: 'task',
+      resource_id:   detail.guid,
+      page_size:     100,
+    },
+    timeout: 10000,
+  });
+
+  console.log('  💬 Comments response code:', res.data.code, 'msg:', res.data.msg);
+  if (res.data.code !== 0) return [];
+
   const since = Date.now() - 24 * 60 * 60 * 1000;
+  return (res.data?.data?.items || [])
+    .filter(c => parseInt(c.created_at || 0) >= since)
+    .map(c => ({
+      text:      c.content || '',
+      createdAt: new Date(parseInt(c.created_at))
+                   .toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }),
+    }));
+}
 
   // Thử tất cả endpoint có thể với user token
   const endpoints = [
