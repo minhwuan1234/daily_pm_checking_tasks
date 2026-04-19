@@ -18,7 +18,6 @@ jobs:
       - name: Install dependencies
         run: |
           npm install
-          echo "✅ node_modules installed"
           ls node_modules | grep -E "axios|dotenv"
 
       - name: Set payload
@@ -35,8 +34,8 @@ jobs:
           PAYLOAD: ${{ steps.payload.outputs.data }}
           LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
           LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
+          LARK_REFRESH_TOKEN: ${{ secrets.LARK_REFRESH_TOKEN }}
           NODE_PATH: ${{ github.workspace }}/node_modules
         run: |
           echo "Working dir: $(pwd)"
-          echo "node_modules exists: $(ls -la | grep node_modules)"
           node src/index.js
