@@ -1,12 +1,11 @@
+// Bỏ dotenv
 const axios = require('axios');
 
 let cachedToken = null;
 let tokenExpiry = 0;
 
 async function getAccessToken() {
-  if (cachedToken && Date.now() < tokenExpiry) {
-    return cachedToken;
-  }
+  if (cachedToken && Date.now() < tokenExpiry) return cachedToken;
 
   const res = await axios.post(
     'https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal',
