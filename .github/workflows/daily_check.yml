@@ -16,7 +16,7 @@ jobs:
         run: npm install
       - name: Run
         env:
-          PAYLOAD: ${{ toJson(github.event.client_payload) }}
-          LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
-          LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
+        PAYLOAD: ${{ toJson(github.event.client_payload) }}
+        LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
+        LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
         run: node src/index.js
