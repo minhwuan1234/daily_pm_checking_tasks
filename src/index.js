@@ -46,6 +46,15 @@ async function getAccessToken() {
   return cachedToken;
 }
 
+async function getTenantToken() {
+  const res = await axios.post(
+    'https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal',
+    { app_id: process.env.LARK_APP_ID, app_secret: process.env.LARK_APP_SECRET },
+    { headers: { 'Content-Type': 'application/json' } }
+  );
+  return res.data.tenant_access_token;
+}
+
 async function searchTaskInTasklist(keyword) {
   const token = await getAccessToken();
   let allTasks = [], pageToken = null;
@@ -75,12 +84,6 @@ async function getTaskDetail(taskGuid) {
   const t = res.data?.data?.task;
   if (!t) return null;
 
-  // Log toàn bộ keys để tìm v1 ID
-  console.log('  🔑 Task keys:', Object.keys(t).join(', '));
-  console.log('  🔑 Task id field:', t.id);
-  console.log('  🔑 Task task_id:', t.task_id);
-  console.log('  🔑 Task source:', JSON.stringify(t.source));
-
   const ts = parseInt(t.due?.timestamp || 0);
   const ms = ts > 1e10 ? ts : ts * 1000;
 
@@ -90,8 +93,7 @@ async function getTaskDetail(taskGuid) {
     status:      t.completed_at && t.completed_at !== '0' ? 'completed' : 'in_progress',
     due:         ts ? new Date(ms).toLocaleDateString('vi-VN') : null,
     guid:        t.guid,
-    id:          t.id,        // numeric ID nếu có
-    task_id:     t.task_id,   // field khác
+    task_id:     t.task_id,
     url:         `https://applink.larksuite.com/client/todo/detail?guid=${t.guid}`,
   };
 }
@@ -99,61 +101,33 @@ async function getTaskDetail(taskGuid) {
 async function getRecentComments(detail) {
   if (!detail) return [];
 
-  // Lấy tenant token riêng cho comments
-  const tenantRes = await axios.post(
-    'https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal',
-    { app_id: process.env.LARK_APP_ID, app_secret: process.env.LARK_APP_SECRET },
-    { headers: { 'Content-Type': 'application/json' } }
-  );
-  const tenantToken = tenantRes.data.tenant_access_token;
-
+  // Thử dùng tenant token cho comments v1
+  const tenantToken = await getTenantToken();
   const rawId = (detail.task_id || '').replace(/^t/, '');
 
-  const res = await axios.get(
-    `https://open.larksuite.com/open-apis/task/v1/tasks/${rawId}/comments`,
-    {
-      headers: { Authorization: `Bearer ${tenantToken}` },
-      params:  { page_size: 100 },
-    }
-  );
-  console.log('Comments response:', JSON.stringify(res.data).slice(0, 200));
-
-  if (res.data.code !== 0) return [];
-
-  const since = Date.now() - 24 * 60 * 60 * 1000;
-  return (res.data?.data?.items || [])
-    .filter(c => parseInt(c.create_milli_time || 0) >= since)
-    .map(c => ({ text: c.content || '', createdAt: new Date(parseInt(c.create_milli_time)).toLocaleString('vi-VN') }));
-}
-
-  // Thử tất cả ID có thể dùng cho v1 comments
-  const rawId = (detail.task_id || '').replace(/^t/, '');
   const idsToTry = [rawId, detail.task_id, detail.guid].filter(Boolean);
   console.log('  💬 Thử comment với IDs:', idsToTry);
 
   for (const id of idsToTry) {
     try {
       const res = await axios.get(`${BASE}/task/v1/tasks/${id}/comments`, {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${tenantToken}` },
         params:  { page_size: 100 },
       });
-      console.log(`  💬 Comments [${id}] code:`, res.data.code, 'msg:', res.data.msg);
+      console.log(`  💬 [${id}] code:${res.data.code} msg:${res.data.msg}`);
+
       if (res.data.code === 0) {
-        const comments = res.data?.data?.items || [];
         const since = Date.now() - 24 * 60 * 60 * 1000;
-        return comments
-          .filter(c => {
-            const ts = parseInt(c.create_milli_time || c.created_at || 0);
-            return ts >= since;
-          })
+        return (res.data?.data?.items || [])
+          .filter(c => parseInt(c.create_milli_time || 0) >= since)
           .map(c => ({
             text:      c.content || '',
-            createdAt: new Date(parseInt(c.create_milli_time || c.created_at))
+            createdAt: new Date(parseInt(c.create_milli_time))
                          .toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }),
           }));
       }
     } catch(e) {
-      console.warn(`  ⚠️ Comments [${id}] error:`, e.message);
+      console.warn(`  ⚠️ [${id}] error:`, e.response?.data || e.message);
     }
   }
   return [];
@@ -187,10 +161,14 @@ async function main() {
       console.log(`  📅 Due: ${detail?.due} | 💬 Comments: ${comments.length}`);
 
       memberReport.tasks.push({
-        taskName: t.task, larkTitle: detail?.title,
-        status: detail?.status, due: detail?.due,
-        description: detail?.description, url: detail?.url,
-        comments, larkFound: true,
+        taskName:    t.task,
+        larkTitle:   detail?.title,
+        status:      detail?.status,
+        due:         detail?.due,
+        description: detail?.description,
+        url:         detail?.url,
+        comments,
+        larkFound:   true,
       });
     }
     report.push(memberReport);
