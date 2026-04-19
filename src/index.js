@@ -18,6 +18,7 @@ async function getAccessToken() {
       const saved = JSON.parse(fs.readFileSync(TOKEN_FILE, 'utf8'));
       if (saved.refresh_token) { refreshToken = saved.refresh_token; console.log('📂 Dùng refresh token từ file'); }
     } catch(e) {}
+    console.log('Full access token:', access_token);
   }
 
   const res = await axios.post(
