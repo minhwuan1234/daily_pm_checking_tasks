@@ -1,6 +1,6 @@
 const axios = require('axios');
 
-// ── Auth ─────────────────────────────────────────────────────────
+// ── Auth: tự động update refresh token sau mỗi lần dùng ─────────
 let cachedToken = null;
 let tokenExpiry  = 0;
 
@@ -19,9 +19,47 @@ async function getAccessToken() {
   );
 
   if (res.data.code !== 0) throw new Error(JSON.stringify(res.data));
-  cachedToken = res.data.data.access_token;
-  tokenExpiry = Date.now() + (res.data.data.expires_in - 60) * 1000;
+
+  const { access_token, refresh_token, expires_in } = res.data.data;
+
+  // Lưu refresh token mới vào GitHub Secret qua API
+  if (refresh_token && process.env.GITHUB_TOKEN) {
+    await updateGithubSecret(refresh_token);
+  }
+
+  cachedToken = access_token;
+  tokenExpiry = Date.now() + (expires_in - 60) * 1000;
+  console.log('✅ Token OK:', access_token.slice(0, 15));
   return cachedToken;
+}
+
+async function updateGithubSecret(newRefreshToken) {
+  try {
+    // Lấy public key để encrypt secret
+    const keyRes = await axios.get(
+      `https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}/actions/secrets/public-key`,
+      { headers: { Authorization: `Bearer ${process.env.GITHUB_TOKEN}`, 'X-GitHub-Api-Version': '2022-11-28' } }
+    );
+    const { key, key_id } = keyRes.data;
+
+    // Encrypt bằng libsodium
+    const sodium = require('libsodium-wrappers');
+    await sodium.ready;
+    const binkey  = sodium.from_base64(key, sodium.base64_variants.ORIGINAL);
+    const binsec  = sodium.from_string(newRefreshToken);
+    const encrypted = sodium.crypto_box_seal(binsec, binkey);
+    const encryptedB64 = sodium.to_base64(encrypted, sodium.base64_variants.ORIGINAL);
+
+    // Update secret
+    await axios.put(
+      `https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}/actions/secrets/LARK_REFRESH_TOKEN`,
+      { encrypted_value: encryptedB64, key_id },
+      { headers: { Authorization: `Bearer ${process.env.GITHUB_TOKEN}`, 'X-GitHub-Api-Version': '2022-11-28' } }
+    );
+    console.log('🔄 Refresh token updated in GitHub Secrets');
+  } catch (e) {
+    console.warn('⚠️  Không update được refresh token:', e.message);
+  }
 }
 
 // ── Lark API helpers ─────────────────────────────────────────────
@@ -48,7 +86,6 @@ async function getTaskDetail(taskId) {
   const t = res.data?.data?.task;
   if (!t) return null;
   return {
-    id:          t.guid,
     title:       t.summary,
     description: t.description || '',
     status:      t.completed_at ? 'completed' : 'in_progress',
@@ -69,11 +106,7 @@ async function getRecentComments(taskId) {
   const since = Date.now() - 24 * 60 * 60 * 1000;
   return comments
     .filter(c => parseInt(c.created_at) * 1000 >= since)
-    .map(c => ({
-      text:      c.content || '',
-      createdAt: new Date(parseInt(c.created_at) * 1000)
-                   .toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }),
-    }));
+    .map(c => ({ text: c.content || '', createdAt: new Date(parseInt(c.created_at) * 1000).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }) }));
 }
 
 // ── Main ─────────────────────────────────────────────────────────
@@ -83,9 +116,6 @@ async function main() {
 
   console.log(`📅 Ngày: ${date}`);
   console.log(`👥 Thành viên: ${members.length}\n`);
-
-  const token = await getAccessToken();
-  console.log('✅ Token OK:', token.slice(0, 15));
 
   const report = [];
 
@@ -98,7 +128,7 @@ async function main() {
       const matched = await searchTasks(t.task);
 
       if (!matched.length) {
-        console.log(`  ⚠️  Không tìm thấy trên Lark`);
+        console.log(`  ⚠️  Không tìm thấy`);
         memberReport.tasks.push({ taskName: t.task, larkFound: false });
         continue;
       }
@@ -111,21 +141,16 @@ async function main() {
       console.log(`  💬 Comments 24h: ${comments.length}`);
 
       memberReport.tasks.push({
-        taskName:    t.task,
-        larkTitle:   detail.title,
-        status:      detail.status,
-        due:         detail.due,
-        description: detail.description,
-        url:         detail.url,
-        comments,
-        larkFound:   true,
+        taskName: t.task, larkTitle: detail.title,
+        status: detail.status, due: detail.due,
+        description: detail.description, url: detail.url,
+        comments, larkFound: true,
       });
     }
     report.push(memberReport);
   }
 
   console.log('\n' + '═'.repeat(60));
-  console.log('📋 REPORT:');
   console.log(JSON.stringify(report, null, 2));
 }
 
