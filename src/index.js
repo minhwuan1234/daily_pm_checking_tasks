@@ -163,16 +163,25 @@ JSON schema:
 // ── Lark: lấy open_id từ email ────────────────────────────────────
 async function getOpenIdByEmail(email) {
   const token = await getTenantToken();
-  const res = await axios.get(`${BASE}/contact/v3/users/batch_get_id`, {
-    headers: { Authorization: `Bearer ${token}` },
-    params:  { emails: email, user_id_type: 'open_id' },
-  });
 
-  console.log(`  👤 Lookup email ${email}:`, JSON.stringify(res.data).slice(0, 200));
+  // Đúng endpoint: POST với body chứa emails array
+  const res = await axios.post(
+    `${BASE}/contact/v3/users/batch_get_id?user_id_type=open_id`,
+    { emails: [email] },
+    { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
+  );
+
+  console.log(`  👤 Lookup email ${email}:`, JSON.stringify(res.data).slice(0, 300));
+
+  if (res.data.code !== 0) {
+    console.error('  ❌ Lookup error:', res.data.msg);
+    return null;
+  }
 
   const userList = res.data?.data?.user_list || [];
   if (!userList.length) return null;
-  return userList[0]?.user_id || null;
+  const user = userList.find(u => u.user_id);
+  return user?.user_id || null;
 }
 
 // ── Lark: format & gửi message ────────────────────────────────────
