@@ -37,11 +37,7 @@ async function getAccessToken() {
   if (res.data.code !== 0) throw new Error(JSON.stringify(res.data));
 
   const { access_token, refresh_token, expires_in } = res.data.data;
-
-  fs.writeFileSync(TOKEN_FILE, JSON.stringify({
-    refresh_token,
-    updated_at: new Date().toISOString(),
-  }));
+  fs.writeFileSync(TOKEN_FILE, JSON.stringify({ refresh_token, updated_at: new Date().toISOString() }));
 
   const { execSync } = require('child_process');
   try {
@@ -51,9 +47,7 @@ async function getAccessToken() {
     execSync('git commit -m "chore: rotate lark refresh token" --allow-empty');
     execSync('git push');
     console.log('🔄 Refresh token rotated & saved');
-  } catch(e) {
-    console.warn('⚠️ Git push failed:', e.message.slice(0, 80));
-  }
+  } catch(e) { console.warn('⚠️ Git push failed:', e.message.slice(0, 80)); }
 
   cachedToken = access_token;
   tokenExpiry = Date.now() + (expires_in - 60) * 1000;
@@ -64,7 +58,6 @@ async function getAccessToken() {
 async function searchTaskInTasklist(keyword) {
   const token = await getAccessToken();
   let allTasks = [], pageToken = null;
-
   do {
     const params = { page_size: 100 };
     if (pageToken) params.page_token = pageToken;
@@ -75,8 +68,6 @@ async function searchTaskInTasklist(keyword) {
     allTasks = allTasks.concat(res.data?.data?.items || []);
     pageToken = res.data?.data?.page_token;
   } while (pageToken);
-
-  console.log(`  📋 Tasklist có ${allTasks.length} tasks`);
 
   const kw = keyword.toLowerCase().trim();
   return allTasks.filter(t => {
@@ -90,15 +81,10 @@ async function getTaskDetail(taskGuid) {
   const res = await axios.get(`${BASE}/task/v2/tasks/${taskGuid}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-
-  if (res.data.code !== 0) {
-    console.warn('  ⚠️ Detail error:', res.data.msg);
-    return null;
-  }
+  if (res.data.code !== 0) { console.warn('⚠️ Detail error:', res.data.msg); return null; }
 
   const t = res.data?.data?.task;
   if (!t) return null;
-
   const ts = parseInt(t.due?.timestamp || 0);
   const ms = ts > 1e10 ? ts : ts * 1000;
 
@@ -108,7 +94,6 @@ async function getTaskDetail(taskGuid) {
     status:      t.completed_at && t.completed_at !== '0' ? 'completed' : 'in_progress',
     due:         ts ? new Date(ms).toLocaleDateString('vi-VN') : null,
     guid:        t.guid,
-    task_id:     t.task_id,
     url:         `https://applink.larksuite.com/client/todo/detail?guid=${t.guid}`,
   };
 }
@@ -116,40 +101,116 @@ async function getTaskDetail(taskGuid) {
 async function getRecentComments(detail) {
   if (!detail) return [];
   const token = await getAccessToken();
-
   const res = await axios.get(`${BASE}/task/v2/comments`, {
     headers: { Authorization: `Bearer ${token}` },
-    params: {
-      resource_type: 'task',
-      resource_id:   detail.guid,
-      page_size:     100,
-    },
+    params:  { resource_type: 'task', resource_id: detail.guid, page_size: 100 },
     timeout: 15000,
   });
-
-  console.log(`  💬 Comments code:${res.data.code} msg:${res.data.msg}`);
   if (res.data.code !== 0) return [];
 
-  const items = res.data?.data?.items || [];
-  console.log(`  💬 Total comments: ${items.length}`);
-
   const since = Date.now() - 24 * 60 * 60 * 1000;
-  return items
+  return (res.data?.data?.items || [])
     .filter(c => {
       const ts = parseInt(c.created_at || 0);
-      const ms = ts > 1e10 ? ts : ts * 1000;
-      return ms >= since;
+      return (ts > 1e10 ? ts : ts * 1000) >= since;
     })
     .map(c => {
       const ts = parseInt(c.created_at || 0);
-      const ms = ts > 1e10 ? ts : ts * 1000;
       return {
         text:      c.content || '',
-        createdAt: new Date(ms).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }),
+        createdAt: new Date(ts > 1e10 ? ts : ts * 1000)
+                     .toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }),
       };
     });
 }
 
+// ── AI Analysis cho từng task ─────────────────────────────────────
+async function analyzeTask(member, task, date) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return null;
+
+  const commentsText = task.comments?.length > 0
+    ? task.comments.map(c => `  [${c.createdAt}] ${c.text}`).join('\n')
+    : '  Không có activity trong 24h qua';
+
+  const prompt = `Bạn là PM assistant. Hãy phân tích task sau và trả về JSON theo đúng format bên dưới.
+
+THÔNG TIN TASK:
+- Thành viên: ${member}
+- Tên task: ${task.larkTitle}
+- Trạng thái: ${task.status === 'completed' ? 'Hoàn thành' : 'Đang thực hiện'}
+- Deadline: ${task.due || 'Không có'}
+- Mô tả: ${task.description || 'Không có'}
+- Comments 24h gần nhất:
+${commentsText}
+- Ngày hôm nay: ${date}
+
+Trả về JSON với format SAU ĐÂY, KHÔNG thêm bất kỳ text nào khác ngoài JSON:
+{
+  "status_summary": "1 câu tóm tắt tình trạng hiện tại của task",
+  "risk_level": "low | medium | high",
+  "risk_reason": "Lý do đánh giá risk (nếu low thì ghi 'Không có vấn đề')",
+  "next_action": "Hành động cụ thể PM cần làm ngay hôm nay với task này",
+  "assignee_action": "Việc thành viên cần làm tiếp theo"
+}`;
+
+  const res = await axios.post(
+    'https://api.anthropic.com/v1/messages',
+    {
+      model:      'claude-sonnet-4-20250514',
+      max_tokens: 512,
+      messages:   [{ role: 'user', content: prompt }],
+    },
+    {
+      headers: {
+        'x-api-key':         apiKey,
+        'anthropic-version': '2023-06-01',
+        'Content-Type':      'application/json',
+      },
+    }
+  );
+
+  const text = res.data?.content?.[0]?.text || '{}';
+  try {
+    return JSON.parse(text.replace(/```json|```/g, '').trim());
+  } catch(e) {
+    console.warn('⚠️ Parse AI response failed:', text.slice(0, 100));
+    return null;
+  }
+}
+
+// ── Format output chuẩn ───────────────────────────────────────────
+function buildFinalOutput(report, date) {
+  return {
+    date,
+    generated_at: new Date().toISOString(),
+    total_members: report.length,
+    total_tasks: report.reduce((s, m) => s + m.tasks.length, 0),
+    members: report.map(m => ({
+      member: m.member,
+      tasks: m.tasks.map(t => ({
+        // Thông tin task
+        task_info: {
+          name:        t.larkTitle || t.taskName,
+          status:      t.status || 'unknown',
+          due:         t.due || null,
+          description: t.description || '',
+          url:         t.url || null,
+          lark_found:  t.larkFound,
+        },
+        // Activity 24h
+        recent_activity: {
+          comment_count: t.comments?.length || 0,
+          comments:      t.comments || [],
+        },
+        // AI analysis
+        ai_analysis: t.ai_analysis || null,
+      })),
+    })),
+  };
+}
+
+// ── Main ──────────────────────────────────────────────────────────
 async function main() {
   const payload = JSON.parse(process.env.PAYLOAD || '{}');
   const { date, members = [] } = payload;
@@ -160,6 +221,7 @@ async function main() {
 
   const report = [];
 
+  // ── Bước 1: Lấy data từ Lark ─────────────────────────────────
   for (const m of members) {
     console.log(`\n👤 ${m.member}`);
     const memberReport = { member: m.member, tasks: [] };
@@ -169,7 +231,7 @@ async function main() {
       const matched = await searchTaskInTasklist(t.task);
 
       if (!matched.length) {
-        console.log('  ⚠️ Không tìm thấy');
+        console.log('  ⚠️ Không tìm thấy trên Lark');
         memberReport.tasks.push({ taskName: t.task, larkFound: false });
         continue;
       }
@@ -195,9 +257,23 @@ async function main() {
     report.push(memberReport);
   }
 
+  // ── Bước 2: AI phân tích từng task ───────────────────────────
+  console.log('\n🤖 Đang phân tích tasks với AI...');
+  for (const member of report) {
+    for (const task of member.tasks) {
+      if (!task.larkFound) continue;
+      console.log(`  📝 Phân tích: ${member.member} - ${task.larkTitle?.slice(0, 40)}`);
+      task.ai_analysis = await analyzeTask(member.member, task, date);
+    }
+  }
+
+  // ── Bước 3: Build output chuẩn ───────────────────────────────
+  const finalOutput = buildFinalOutput(report, date);
+
   console.log('\n' + '═'.repeat(60));
-  console.log('📋 REPORT:');
-  console.log(JSON.stringify(report, null, 2));
+  console.log('📦 FINAL OUTPUT (JSON):');
+  console.log(JSON.stringify(finalOutput, null, 2));
+  console.log('═'.repeat(60));
 }
 
 main().catch(err => {
