@@ -37,4 +37,5 @@ jobs:
           LARK_REFRESH_TOKEN: ${{ secrets.LARK_REFRESH_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: node src/index.js
