@@ -124,55 +124,63 @@ async function getRecentComments(detail) {
     });
 }
 
-// ── AI Analysis cho từng task ─────────────────────────────────────
+// ── OpenAI phân tích từng task ────────────────────────────────────
 async function analyzeTask(member, task, date) {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return null;
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) { console.warn('⚠️ Không có OPENAI_API_KEY'); return null; }
 
   const commentsText = task.comments?.length > 0
     ? task.comments.map(c => `  [${c.createdAt}] ${c.text}`).join('\n')
     : '  Không có activity trong 24h qua';
 
-  const prompt = `Bạn là PM assistant. Hãy phân tích task sau và trả về JSON theo đúng format bên dưới.
+  const systemPrompt = `Bạn là PM assistant. Nhiệm vụ: phân tích task và trả về JSON thuần túy.
+Quy tắc bắt buộc:
+- Chỉ trả về JSON, không có text nào khác
+- Không dùng markdown code block
+- Đúng format schema được yêu cầu`;
 
-THÔNG TIN TASK:
-- Thành viên: ${member}
-- Tên task: ${task.larkTitle}
-- Trạng thái: ${task.status === 'completed' ? 'Hoàn thành' : 'Đang thực hiện'}
-- Deadline: ${task.due || 'Không có'}
-- Mô tả: ${task.description || 'Không có'}
-- Comments 24h gần nhất:
+  const userPrompt = `Phân tích task sau:
+
+Thành viên: ${member}
+Tên task: ${task.larkTitle}
+Trạng thái: ${task.status === 'completed' ? 'Hoàn thành' : 'Đang thực hiện'}
+Deadline: ${task.due || 'Không có'}
+Mô tả: ${task.description || 'Không có'}
+Comments 24h:
 ${commentsText}
-- Ngày hôm nay: ${date}
+Ngày hôm nay: ${date}
 
-Trả về JSON với format SAU ĐÂY, KHÔNG thêm bất kỳ text nào khác ngoài JSON:
+Trả về JSON với schema sau:
 {
-  "status_summary": "1 câu tóm tắt tình trạng hiện tại của task",
+  "status_summary": "string - 1 câu tóm tắt tình trạng task",
   "risk_level": "low | medium | high",
-  "risk_reason": "Lý do đánh giá risk (nếu low thì ghi 'Không có vấn đề')",
-  "next_action": "Hành động cụ thể PM cần làm ngay hôm nay với task này",
-  "assignee_action": "Việc thành viên cần làm tiếp theo"
+  "risk_reason": "string - lý do đánh giá risk",
+  "next_action": "string - PM cần làm gì ngay hôm nay",
+  "assignee_action": "string - thành viên cần làm gì tiếp theo"
 }`;
 
   const res = await axios.post(
-    'https://api.anthropic.com/v1/messages',
+    'https://api.openai.com/v1/chat/completions',
     {
-      model:      'claude-sonnet-4-20250514',
-      max_tokens: 512,
-      messages:   [{ role: 'user', content: prompt }],
+      model:       'gpt-4o-mini',
+      temperature: 0,
+      response_format: { type: 'json_object' }, // đảm bảo luôn trả JSON
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user',   content: userPrompt },
+      ],
     },
     {
       headers: {
-        'x-api-key':         apiKey,
-        'anthropic-version': '2023-06-01',
-        'Content-Type':      'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type':  'application/json',
       },
     }
   );
 
-  const text = res.data?.content?.[0]?.text || '{}';
+  const text = res.data?.choices?.[0]?.message?.content || '{}';
   try {
-    return JSON.parse(text.replace(/```json|```/g, '').trim());
+    return JSON.parse(text);
   } catch(e) {
     console.warn('⚠️ Parse AI response failed:', text.slice(0, 100));
     return null;
@@ -183,13 +191,12 @@ Trả về JSON với format SAU ĐÂY, KHÔNG thêm bất kỳ text nào khác 
 function buildFinalOutput(report, date) {
   return {
     date,
-    generated_at: new Date().toISOString(),
+    generated_at:  new Date().toISOString(),
     total_members: report.length,
-    total_tasks: report.reduce((s, m) => s + m.tasks.length, 0),
+    total_tasks:   report.reduce((s, m) => s + m.tasks.length, 0),
     members: report.map(m => ({
       member: m.member,
-      tasks: m.tasks.map(t => ({
-        // Thông tin task
+      tasks:  m.tasks.map(t => ({
         task_info: {
           name:        t.larkTitle || t.taskName,
           status:      t.status || 'unknown',
@@ -198,12 +205,10 @@ function buildFinalOutput(report, date) {
           url:         t.url || null,
           lark_found:  t.larkFound,
         },
-        // Activity 24h
         recent_activity: {
           comment_count: t.comments?.length || 0,
           comments:      t.comments || [],
         },
-        // AI analysis
         ai_analysis: t.ai_analysis || null,
       })),
     })),
@@ -221,7 +226,7 @@ async function main() {
 
   const report = [];
 
-  // ── Bước 1: Lấy data từ Lark ─────────────────────────────────
+  // Bước 1: Lấy data từ Lark
   for (const m of members) {
     console.log(`\n👤 ${m.member}`);
     const memberReport = { member: m.member, tasks: [] };
@@ -257,23 +262,21 @@ async function main() {
     report.push(memberReport);
   }
 
-  // ── Bước 2: AI phân tích từng task ───────────────────────────
-  console.log('\n🤖 Đang phân tích tasks với AI...');
+  // Bước 2: OpenAI phân tích từng task
+  console.log('\n🤖 Đang phân tích với OpenAI...');
   for (const member of report) {
     for (const task of member.tasks) {
       if (!task.larkFound) continue;
-      console.log(`  📝 Phân tích: ${member.member} - ${task.larkTitle?.slice(0, 40)}`);
+      console.log(`  📝 ${member.member} - ${task.larkTitle?.slice(0, 40)}`);
       task.ai_analysis = await analyzeTask(member.member, task, date);
     }
   }
 
-  // ── Bước 3: Build output chuẩn ───────────────────────────────
+  // Bước 3: Output chuẩn
   const finalOutput = buildFinalOutput(report, date);
-
   console.log('\n' + '═'.repeat(60));
-  console.log('📦 FINAL OUTPUT (JSON):');
+  console.log('📦 FINAL OUTPUT:');
   console.log(JSON.stringify(finalOutput, null, 2));
-  console.log('═'.repeat(60));
 }
 
 main().catch(err => {
